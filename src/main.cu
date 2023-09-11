@@ -14,7 +14,7 @@
 #define STB_IMAGE_IMPLEMENTATION
 #include "orb_gpu/stb_image.h"
 
-const int BRESENHAM_CIRCUMFERENCE = 16;
+__constant__ const int BRESENHAM_CIRCUMFERENCE = 16;
 
 struct Image
 {
@@ -119,10 +119,12 @@ __device__ void nonMaxSuppression(Image& aImg,
         return;
     }
 
-    const int MASK_SIZE = 5;
+    constexpr int MASK_SIZE = 3;
     bool shouldDelete = false;
 
+#pragma unroll
     for (int i = -MASK_SIZE / 2; i <= MASK_SIZE / 2; ++i) {
+#pragma unroll
         for (int j = -MASK_SIZE / 2; j <= MASK_SIZE / 2; ++j) {
             shouldDelete |= (aScores[aX + i + (aY + j) * aImg.width] > pixelScore);
         }
@@ -146,38 +148,45 @@ __device__ void cornerDetection(Image& aImg,
     uint8_t circlePixels[BRESENHAM_CIRCUMFERENCE];
     computeCirclePixels(circlePixels, aImg, aX, aY);
 
-    const uint8_t centerPixel = aImg.getValue(aX, aY);
+    const size_t pixelPos = aX + aImg.width * aY;
+
+    const uint8_t centerPixel = aImg.img[pixelPos];
 
     const uint8_t pixelPlusTh = (255 - aThreshold) < centerPixel ? 255 : centerPixel + aThreshold;
     const uint8_t pixelMinusTh = (aThreshold > centerPixel) ? 0 : centerPixel - aThreshold;
 
-    uint16_t isCornerBits = 0;
+    // uint16_t isCornerBits = 0;
+    bool isCorner = false;
     for (int i = 0; i < BRESENHAM_CIRCUMFERENCE; ++i) {
         bool allLess = true;
         bool allGreater = true;
-        for (int j = -4; j <= 4; ++j) {
-            const int wrappedVal = wrapValue(i + j, 0, BRESENHAM_CIRCUMFERENCE);
+#pragma unroll
+        for (int j = 0; j < 9; ++j) {
+            // since BC is multiple of 2 , % can be done this way
+            const int wrappedVal = (i + j) & (BRESENHAM_CIRCUMFERENCE - 1);
             const uint8_t& testPixel = circlePixels[wrappedVal];
 
             allLess &= testPixel < pixelMinusTh;
             allGreater &= testPixel > pixelPlusTh;
         }
 
-        isCornerBits = isCornerBits | (static_cast<int>(allLess || allGreater) << i);
+        // isCornerBits = isCornerBits | (static_cast<int>(allLess || allGreater) << i);
+        isCorner |= (allLess || allGreater);
     }
 
-    if (isCornerBits == 0) {
+    if (!isCorner) {
         return;
     }
-    aCorners[aX + aImg.width * aY] = true;
+    aCorners[pixelPos] = true;
 
     uint8_t score = 0;
 
+#pragma unroll
     for (int i = 0; i < BRESENHAM_CIRCUMFERENCE; ++i) {
         score += abs(centerPixel - circlePixels[i]);
     }
 
-    aScores[aX + aImg.width * aY] = score;
+    aScores[pixelPos] = score;
 }
 
 __global__ void fast9(Image aImg, uint8_t aThreshold, bool* aCorners, uint8_t* aScores)

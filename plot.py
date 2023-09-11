@@ -32,7 +32,7 @@ kpts = fast.detect(image, None)
 
 new_image2 = cv2.drawKeypoints(image, kpts, None, color=(255, 0, 0))
 
-cv2.imshow("image1", image)
-cv2.imshow("image2", new_image)
-cv2.imshow("image3", new_image2)
+cv2.imshow("image", image)
+cv2.imshow("mine", new_image)
+cv2.imshow("opencv", new_image2)
 cv2.waitKey(0)
