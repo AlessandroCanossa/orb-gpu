@@ -16,9 +16,12 @@ set(CMAKE_CUDA_FLAGS
     "${CMAKE_CUDA_FLAGS} --expt-extended-lambda --expt-relaxed-constexpr")
 
 find_package(CUDAToolkit REQUIRED)
+find_package(OpenCV)
 
-add_executable(orb_gpu src/main.cu)
+add_executable(orb_gpu src/main.cpp src/fast.cu src/scaling.cu src/accum.cu
+                       src/gaussian_blur.cu)
 target_include_directories(
   orb_gpu PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-                 $<INSTALL_INTERFACE:include>)
-target_link_libraries(orb_gpu PUBLIC CUDA::cudart CUDA::cuda_driver)
+                 $<INSTALL_INTERFACE:include> ${OpenCV_INCLUDE_DIRS})
+target_link_libraries(orb_gpu PUBLIC CUDA::cudart CUDA::cuda_driver
+                                     ${OpenCV_LIBS})
