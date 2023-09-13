@@ -18,8 +18,15 @@ set(CMAKE_CUDA_FLAGS
 find_package(CUDAToolkit REQUIRED)
 find_package(OpenCV)
 
-add_executable(orb_gpu src/main.cpp src/fast.cu src/scaling.cu src/accum.cu
-                       src/gaussian_blur.cu)
+add_executable(
+  orb_gpu
+  src/main.cpp
+  src/fast.cu
+  src/scaling.cu
+  src/accum.cu
+  src/orb.cu
+  src/angles.cu
+  src/gaussian_blur.cu)
 target_include_directories(
   orb_gpu PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
                  $<INSTALL_INTERFACE:include> ${OpenCV_INCLUDE_DIRS})
