@@ -23,7 +23,7 @@ __device__ inline void computeCirclePixels(uint8_t (&aCircle)[BRESENHAM_CIRCUMFE
     aCircle[15] = aImg.getValue(aX + -1, aY + 3);  //-1 + aStride * 3;
 }
 
-__device__ void nonMaxSuppression(Image& aImg, Kp& aKp, Kp* aKpts)
+__device__ void nonMaxSuppression(Image& aImg, Corner& aKp, Corner* aKpts)
 {
     const uint8_t& pixelScore = aKp.score;
     const uint16_t& x = aKp.x;
@@ -49,7 +49,7 @@ __device__ void nonMaxSuppression(Image& aImg, Kp& aKp, Kp* aKpts)
     }
 }
 
-__device__ void cornerDetection(Image& aImg, uint8_t aThreshold, Kp& aKp)
+__device__ void cornerDetection(Image& aImg, uint8_t aThreshold, Corner& aKp)
 {
     uint8_t circlePixels[BRESENHAM_CIRCUMFERENCE];
     computeCirclePixels(circlePixels, aImg, aKp.x, aKp.y);
@@ -90,7 +90,7 @@ __device__ void cornerDetection(Image& aImg, uint8_t aThreshold, Kp& aKp)
     aKp.score = isCorner ? score : 0;
 }
 
-__global__ void fast9(Image aImg, uint8_t aThreshold, Kp* aKpts)
+__global__ void fast9(Image aImg, uint8_t aThreshold, Corner* aKpts)
 {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     int idy = blockIdx.y * blockDim.y + threadIdx.y;
@@ -99,7 +99,7 @@ __global__ void fast9(Image aImg, uint8_t aThreshold, Kp* aKpts)
         return;
     }
 
-    Kp& kp = aKpts[idx + idy * aImg.width];
+    Corner& kp = aKpts[idx + idy * aImg.width];
     kp.x = idx;
     kp.y = idy;
 
@@ -112,11 +112,10 @@ __global__ void fast9(Image aImg, uint8_t aThreshold, Kp* aKpts)
 
 // -------------------------------------------------------------------------
 
-void callFast(Image& aImg, uint8_t aThreshold, Kp* aKpts, cudaStream_t aStream)
+void callFast(Image& aImg, uint8_t aThreshold, Corner* aKpts, cudaStream_t aStream)
 {
-    dim3 gridDim{ static_cast<unsigned int>((aImg.width - 1) / 32 + 1),
-                  static_cast<unsigned int>((aImg.height - 1) / 32 + 1) };
-    dim3 blockDim{ 32, 32 };
+    dim3 gridDim(ceil((double)aImg.width / 32), ceil((double)aImg.height / 8));
+    dim3 blockDim(32, 8);
 
     fast9<<<gridDim, blockDim, 0, aStream>>>(aImg, aThreshold, aKpts);
 }

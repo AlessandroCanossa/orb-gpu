@@ -21,9 +21,8 @@ __global__ void scaling(const Image aInput,
 void callImageScaling(const Image& aInput, Image& aOutput, cudaStream_t aStream)
 {
 
-    dim3 gridDim{ static_cast<unsigned int>((aOutput.width - 1) / 32 + 1),
-                  static_cast<unsigned int>((aOutput.height - 1) / 32 + 1) };
-    dim3 blockDim{ 32, 32 };
+    dim3 gridDim(ceil((double)aOutput.width / 32), ceil((double)aOutput.height / 8));
+    dim3 blockDim(32, 8);
 
     float aXScalingRatio = float(aInput.width) / float(aOutput.width);
     float aYScalingRatio = float(aInput.height) / float(aOutput.height);
