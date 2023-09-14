@@ -16,210 +16,215 @@ constexpr float SCALING = 1.7;
 constexpr int LAYERS = 3;
 constexpr size_t MAX_KPTS_LAYER = 10000;
 
+class App
+{
+  public:
+    App()
+    {
+        for (int i = 0; i < LAYERS; ++i) {
+            cudaStreamCreate(&mStreams[i]);
+        }
+    }
+
+    App(const App&) = default;
+    App(App&&) = delete;
+    App& operator=(const App&) = default;
+    App& operator=(App&&) = delete;
+    void init(const cv::Mat& aInput)
+    {
+        if (!mInit) {
+            for (int i = 0; i < LAYERS; ++i) {
+                size_t cols = aInput.cols / std::pow(SCALING, i);
+                size_t rows = aInput.rows / std::pow(SCALING, i);
+                mGpuImgs[i] = Image(cols, rows, true);
+                mGpuImgsBlur[i] = Image(cols, rows, true);
+                cudaMalloc(&mCorners[i], sizeof(Corner) * cols * rows);
+                cudaMalloc(&mAccumCorners[i], sizeof(Corner) * MAX_KPTS_LAYER);
+                cudaMalloc(&mKeypoints[i], sizeof(Keypoint) * MAX_KPTS_LAYER);
+            }
+
+            mInit = true;
+        }
+
+        tkCUDA(mGpuImgs[0].upload(aInput.data, mStreams[0]));
+    }
+
+    void run()
+    {
+        size_t totalTime = 0;
+        auto tic = std::chrono::steady_clock::now();
+        scaling();
+        auto toc = std::chrono::steady_clock::now();
+        auto delta = std::chrono::duration_cast<std::chrono::nanoseconds>(toc - tic).count();
+        std::cerr << "Scaling time: " << delta << "ns\n";
+        totalTime += delta;
+
+        tic = std::chrono::steady_clock::now();
+        blur();
+        // toc = std::chrono::steady_clock::now();
+
+        // tic = std::chrono::steady_clock::now();
+        fast();
+        toc = std::chrono::steady_clock::now();
+        delta = std::chrono::duration_cast<std::chrono::nanoseconds>(toc - tic).count();
+        std::cerr << "Blur/fast time: " << delta << "ns\n";
+        totalTime += delta;
+
+        tic = std::chrono::steady_clock::now();
+        collect();
+        toc = std::chrono::steady_clock::now();
+        delta = std::chrono::duration_cast<std::chrono::nanoseconds>(toc - tic).count();
+        std::cerr << "Collect time: " << delta << "ns\n";
+        totalTime += delta;
+
+        tic = std::chrono::steady_clock::now();
+        angles();
+        toc = std::chrono::steady_clock::now();
+        delta = std::chrono::duration_cast<std::chrono::nanoseconds>(toc - tic).count();
+        std::cerr << "Orientation time: " << delta << "ns\n";
+        totalTime += delta;
+
+        tic = std::chrono::steady_clock::now();
+        descriptors();
+        toc = std::chrono::steady_clock::now();
+        delta = std::chrono::duration_cast<std::chrono::nanoseconds>(toc - tic).count();
+        std::cerr << "Descriptors time: " << delta << "ns\n";
+        totalTime += delta;
+        std::cerr << "\nTotal time elapsed: " << totalTime << "ns\n";
+    }
+
+    void output(std::vector<cv::KeyPoint>& aKpts, cv::Mat& aDescriptors)
+    {
+
+        std::vector<Keypoint> kpts(MAX_KPTS_LAYER * LAYERS);
+        for (int i = 0; i < LAYERS; ++i) {
+            cudaMemcpyAsync(kpts.data() + (MAX_KPTS_LAYER * i),
+                            mKeypoints[i],
+                            MAX_KPTS_LAYER,
+                            cudaMemcpyDeviceToHost,
+                            mStreams[i]);
+        }
+        sync();
+
+        std::sort(kpts.begin(), kpts.end(), [](Keypoint& kp1, Keypoint& kp2) {
+            return kp1.corner.score > kp2.corner.score;
+        });
+
+        kpts.resize(10000);
+
+        aKpts.resize(10000);
+        for (int i = 0; i < 10000; ++i) {
+            cv::KeyPoint kp(
+              kpts[i].corner.x, kpts[i].corner.y, kpts[i].corner.score, kpts[i].angle);
+            aKpts[i] = kp;
+        }
+    }
+
+    ~App()
+    {
+        for (int i = 0; i < LAYERS; ++i) {
+            cudaStreamDestroy(mStreams[i]);
+            cudaFree(mCorners[i]);
+            mGpuImgs[i].free();
+            mGpuImgsBlur[i].free();
+            cudaFree(mAccumCorners[i]);
+            cudaFree(mKeypoints[i]);
+        }
+    }
+
+  private:
+    bool mInit = false;
+    std::array<cudaStream_t, LAYERS> mStreams{ nullptr };
+
+    std::array<Image, LAYERS> mGpuImgsBlur;
+    std::array<Image, LAYERS> mGpuImgs;
+    std::array<Corner*, LAYERS> mCorners{ nullptr };
+    std::array<Corner*, LAYERS> mAccumCorners{ nullptr };
+    std::array<Keypoint*, LAYERS> mKeypoints{ nullptr };
+
+    inline void scaling()
+    {
+        for (int i = 1; i < LAYERS; ++i) {
+            callImageScaling(mGpuImgs[0], mGpuImgs[i], mStreams[i]);
+        }
+        for (int i = 1; i < LAYERS; ++i) {
+            tkCUDA(cudaStreamSynchronize(mStreams[i]));
+        }
+    }
+
+    inline void blur()
+    {
+        for (int i = 0; i < LAYERS; ++i) {
+            callGaussianBlur(mGpuImgs[i], mGpuImgsBlur[i], mStreams[i]);
+        }
+    }
+
+    inline void fast()
+    {
+        for (int i = 0; i < LAYERS; ++i) {
+            callFast(mGpuImgs[i], 50, mCorners[i], mStreams[i]);
+        }
+        sync();
+    }
+
+    inline void sync()
+    {
+        for (auto& stream : mStreams) {
+            tkCUDA(cudaStreamSynchronize(stream));
+        }
+    }
+
+    inline void collect()
+    {
+        for (int i = 0; i < LAYERS; ++i) {
+            ::collect(mCorners[i], mGpuImgs[i].size(), mAccumCorners[i], mStreams[i]);
+        }
+
+        sync();
+        for (int i = 0; i < LAYERS; ++i) {
+            toKpts(mAccumCorners[i], MAX_KPTS_LAYER, mKeypoints[i], mStreams[i]);
+        }
+
+        sync();
+    }
+
+    inline void angles()
+    {
+        for (int i = 0; i < LAYERS; ++i) {
+            callAngles(mGpuImgs[i], mKeypoints[i], MAX_KPTS_LAYER, mStreams[i]);
+        }
+        sync();
+    }
+
+    inline void descriptors()
+    {
+        for (int i = 0; i < LAYERS; ++i) {
+            callDescriptors(
+              mGpuImgsBlur[i], mKeypoints[i], MAX_KPTS_LAYER, i, std::pow(SCALING, i), mStreams[i]);
+        }
+        sync();
+    }
+};
+
 int main(int argc, char** argv)
 {
-    cv::Mat img = cv::imread(argv[1], cv::IMREAD_GRAYSCALE);
+    App app;
+    cv::Mat img = cv::imread("/workspaces/orb-gpu/images/00000.jpg", cv::IMREAD_GRAYSCALE);
     cv::imshow("Display image", img);
     cv::waitKey(0);
 
-    std::array<cudaStream_t, LAYERS> streams{ nullptr };
-    for (auto& stream : streams) {
-        cudaStreamCreate(&stream);
-    }
+    app.init(img);
 
-    std::array<Image, LAYERS> gpuImgs{
-        Image(img.cols, img.rows, true),
-        Image(img.cols / SCALING, img.rows / SCALING, true),
-        Image(img.cols / SCALING * SCALING, img.rows / SCALING * SCALING, true),
-    };
+    app.run();
 
-    if (gpuImgs[0].upload(img.data, streams[0]) != 0) {
-        std::cout << "Failed to upload image to Gpu\n";
-        for (int i = 0; i < LAYERS; ++i) {
-            cudaStreamDestroy(streams[i]);
-            gpuImgs[i].free();
-        }
-        return -1;
-    }
-
-    std::array<Image, LAYERS> gpuImgsBlur{
-        Image(img.cols, img.rows, true),
-        Image(img.cols / SCALING, img.rows / SCALING, true),
-        Image(img.cols / SCALING * SCALING, img.rows / SCALING * SCALING, true),
-    };
-
-    std::array<Corner*, LAYERS> corners{ nullptr };
-    for (int i = 0; i < LAYERS; ++i) {
-        cudaMalloc(&corners[i], sizeof(Corner) * gpuImgs[i].size());
-    }
-    std::array<Corner*, LAYERS> accumCorners{ nullptr };
-    for (int i = 0; i < LAYERS; ++i) {
-        cudaMalloc(&accumCorners[i], sizeof(Corner) * MAX_KPTS_LAYER);
-    }
-    std::array<Keypoint*, LAYERS> keypoints{ nullptr };
-    for (int i = 0; i < LAYERS; ++i) {
-        cudaMalloc(&keypoints[i], sizeof(Keypoint) * MAX_KPTS_LAYER);
-    }
-
-    long timeTotal = 0;
-    // scaling
-    {
-        auto tic = std::chrono::steady_clock::now();
-        for (int i = 1; i < LAYERS; ++i) {
-            callImageScaling(gpuImgs[0], gpuImgs[i], streams[i]);
-        }
-        for (int i = 1; i < LAYERS; ++i) {
-            tkCUDA(cudaStreamSynchronize(streams[i]));
-        }
-        auto toc = std::chrono::steady_clock::now();
-        auto delta = std::chrono::duration_cast<std::chrono::nanoseconds>(toc - tic).count();
-        std::cerr << "Resize elapsed time: " << delta << "ns\n";
-        timeTotal += delta;
-    }
-
-    // execute image blur
-    {
-        auto tic = std::chrono::steady_clock::now();
-        for (int i = 0; i < LAYERS; ++i) {
-            callGaussianBlur(gpuImgs[i], gpuImgsBlur[i], streams[i]);
-        }
-        // for (auto& stream : streams) {
-        //     tkCUDA(cudaStreamSynchronize(stream));
-        // }
-        // auto toc = std::chrono::steady_clock::now();
-        // auto delta = std::chrono::duration_cast<std::chrono::nanoseconds>(toc - tic).count();
-        // std::cerr << "gauss " << delta << "ns\n";
-        // timeTotal += delta;
-        // }
-        // fast
-        // {
-        // auto tic = std::chrono::steady_clock::now();
-        for (int i = 0; i < LAYERS; ++i) {
-            callFast(gpuImgs[i], 50, corners[i], streams[i]);
-        }
-
-        for (auto& stream : streams) {
-            tkCUDA(cudaStreamSynchronize(stream));
-        }
-        auto toc = std::chrono::steady_clock::now();
-
-        auto delta = std::chrono::duration_cast<std::chrono::nanoseconds>(toc - tic).count();
-        std::cerr << "Fast elapsed time: " << delta << "ns\n";
-        timeTotal += delta;
-    }
-
-    // accum
-    {
-        auto tic = std::chrono::steady_clock::now();
-        for (int i = 0; i < LAYERS; ++i) {
-            collect(corners[i], gpuImgs[i].size(), accumCorners[i], streams[i]);
-        }
-        for (auto& stream : streams) {
-            tkCUDA(cudaStreamSynchronize(stream));
-        }
-        auto toc = std::chrono::steady_clock::now();
-        auto delta = std::chrono::duration_cast<std::chrono::nanoseconds>(toc - tic).count();
-        std::cerr << "accum kpts gpu " << delta << "ns\n";
-        timeTotal += delta;
-    }
-
-    // convert to kpts
-    {
-        auto tic = std::chrono::steady_clock::now();
-        for (int i = 0; i < LAYERS; ++i) {
-            toKpts(accumCorners[i], MAX_KPTS_LAYER, keypoints[i], streams[i]);
-        }
-        for (auto& stream : streams) {
-            tkCUDA(cudaStreamSynchronize(stream));
-        }
-        auto toc = std::chrono::steady_clock::now();
-        auto delta = std::chrono::duration_cast<std::chrono::nanoseconds>(toc - tic).count();
-        std::cerr << "conversion to kpts " << delta << "ns\n";
-        timeTotal += delta;
-    }
-    // calc corners angles
-    {
-        auto tic = std::chrono::steady_clock::now();
-        for (int i = 0; i < LAYERS; ++i) {
-            callAngles(gpuImgs[i], keypoints[i], MAX_KPTS_LAYER, streams[i]);
-        }
-        for (auto& stream : streams) {
-            tkCUDA(cudaStreamSynchronize(stream));
-        }
-        auto toc = std::chrono::steady_clock::now();
-        auto delta = std::chrono::duration_cast<std::chrono::nanoseconds>(toc - tic).count();
-        std::cerr << "computing angles " << delta << "ns\n";
-        timeTotal += delta;
-    }
-    // calc descriptors
-    {
-        auto tic = std::chrono::steady_clock::now();
-        for (int i = 0; i < LAYERS; ++i) {
-            callDescriptors(
-              gpuImgsBlur[i], keypoints[i], MAX_KPTS_LAYER, i, std::pow(SCALING, i), streams[i]);
-        }
-        for (auto& stream : streams) {
-            tkCUDA(cudaStreamSynchronize(stream));
-        }
-        auto toc = std::chrono::steady_clock::now();
-        auto delta = std::chrono::duration_cast<std::chrono::nanoseconds>(toc - tic).count();
-        std::cerr << "descriptors " << delta << "ns\n";
-        timeTotal += delta;
-    }
-    // cv::Mat blurImg(img.rows, img.cols, CV_8UC1);
-
-    // cudaMemcpyAsync(blurImg.data,
-    //                 gpuImgsBlur[0].img,
-    //                 sizeof(uint8_t) * img.total(),
-    //                 cudaMemcpyDeviceToHost,
-    //                 streams[0]);
-    // tkCUDA(cudaStreamSynchronize(streams[0]));
-
-    // cv::imshow("blurred img", blurImg);
-    // cv::waitKey();
-
-    auto tic = std::chrono::steady_clock::now();
-    std::vector<Keypoint> kpts(MAX_KPTS_LAYER * LAYERS);
-    for (int i = 0; i < LAYERS; ++i) {
-        cudaMemcpyAsync(kpts.data() + (MAX_KPTS_LAYER * i),
-                        keypoints[i],
-                        MAX_KPTS_LAYER,
-                        cudaMemcpyDeviceToHost,
-                        streams[i]);
-    }
-    for (auto& stream : streams) {
-        tkCUDA(cudaStreamSynchronize(stream));
-    }
-    auto toc = std::chrono::steady_clock::now();
-    auto delta = std::chrono::duration_cast<std::chrono::nanoseconds>(toc - tic).count();
-    std::cerr << "kpts collection " << delta << "ns\n";
-
-    std::sort(kpts.begin(), kpts.end(), [](Keypoint& kp1, Keypoint& kp2) {
-        return kp1.corner.score > kp2.corner.score;
-    });
-
-    kpts.resize(15000);
-
-    std::vector<cv::KeyPoint> cvKpts(15000);
-    // std::vector<cv::Desc
-    for (int i = 0; i < 15000; ++i) {
-        cv::KeyPoint kp(kpts[i].corner.x, kpts[i].corner.y, kpts[i].corner.score, kpts[i].angle);
-        cvKpts[i] = kp;
-    }
+    std::vector<cv::KeyPoint> cvKpts;
+    cv::Mat desc;
+    app.output(cvKpts, desc);
 
     cv::Mat output(img.rows, img.cols, CV_8UC1);
     cv::drawKeypoints(img, cvKpts, output);
     cv::imshow("result", output);
     cv::waitKey();
-    std::cerr << "\nTotal time elapsed: " << timeTotal << "ns\n";
 
-    for (int i = 0; i < LAYERS; ++i) {
-        cudaStreamDestroy(streams[i]);
-        cudaFree(corners[i]);
-        gpuImgs[i].free();
-        gpuImgsBlur[i].free();
-        cudaFree(accumCorners[i]);
-        cudaFree(keypoints[i]);
-    }
     return 0;
 }
