@@ -112,11 +112,16 @@ class App
 
         kpts.resize(10000);
 
+        aDescriptors = cv::Mat(kpts.size(), 32, CV_8U);
         aKpts.resize(10000);
         for (int i = 0; i < 10000; ++i) {
             cv::KeyPoint kp(
               kpts[i].corner.x, kpts[i].corner.y, kpts[i].corner.score, kpts[i].angle);
             aKpts[i] = kp;
+
+            for (size_t j = 0; j < 32; ++j) {
+                aDescriptors.at<uint8_t>(i, j) = kpts[i].desc[j];
+            }
         }
     }
 
@@ -209,11 +214,13 @@ class App
 int main(int argc, char** argv)
 {
     App app;
-    cv::Mat img = cv::imread("/workspaces/orb-gpu/images/00000.jpg", cv::IMREAD_GRAYSCALE);
-    cv::imshow("Display image", img);
+    cv::Mat img1 = cv::imread("/workspaces/orb_gpu/images/00000.jpg", cv::IMREAD_GRAYSCALE);
+    cv::Mat img2 = cv::imread("/workspaces/orb_gpu/images/00030.jpg", cv::IMREAD_GRAYSCALE);
+    cv::imshow("image1", img1);
+    cv::imshow("image2", img2);
     cv::waitKey(0);
 
-    app.init(img);
+    app.init(img1);
 
     app.run();
 
@@ -221,9 +228,31 @@ int main(int argc, char** argv)
     cv::Mat desc;
     app.output(cvKpts, desc);
 
-    cv::Mat output(img.rows, img.cols, CV_8UC1);
-    cv::drawKeypoints(img, cvKpts, output);
-    cv::imshow("result", output);
+    app.init(img2);
+
+    app.run();
+
+    std::vector<cv::KeyPoint> cvKpts2;
+    cv::Mat desc2;
+    app.output(cvKpts2, desc2);
+
+    cv::Ptr<cv::DescriptorMatcher> matcher =
+      cv::DescriptorMatcher::create(cv::DescriptorMatcher::BRUTEFORCE);
+    std::vector<cv::DMatch> matches;
+    matcher->match(desc, desc2, matches);
+
+    std::cout << "Num matches: " << matches.size() << std::endl;
+    cv::Mat imgMatches;
+    cv::drawMatches(img1, cvKpts, img2, cvKpts2, matches, imgMatches);
+
+    cv::imshow("matches", imgMatches);
+
+    cv::Mat output1(img1.rows, img1.cols, CV_8UC1);
+    cv::drawKeypoints(img1, cvKpts, output1);
+    cv::imshow("result1", output1);
+    cv::Mat output2(img2.rows, img2.cols, CV_8UC1);
+    cv::drawKeypoints(img2, cvKpts2, output2);
+    cv::imshow("result2", output2);
     cv::waitKey();
 
     return 0;

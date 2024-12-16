@@ -12,7 +12,16 @@ __device__ inline uint8_t getValue(const SamplePoint* aPattern,
                                    Keypoint& aKp,
                                    float a,
                                    float b)
-{}
+{
+    int x = (int)roundf(aPattern[aIdx].x * a - aPattern[aIdx].y * b);
+    int y = (int)roundf(aPattern[aIdx].x * b + aPattern[aIdx].y * a);
+
+    if (x > aImg.width || y > aImg.height) {
+        return 0;
+    }
+
+    return aImg.img[((aKp.corner.y + y) * aImg.width) + (aKp.corner.x + x)];
+}
 
 __global__ void orb(Image aImg, Keypoint* aKpts, int aSize, int aLayer, float aScale)
 {
